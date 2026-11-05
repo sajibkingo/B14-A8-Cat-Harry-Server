@@ -25,7 +25,7 @@ module.exports = (db) => {
         }
     });
 
-    // Get my listings
+    // Get current user listings
     router.get("/my-listings", async (req, res) => {
         try {
             const { email } = req.query;
@@ -37,7 +37,7 @@ module.exports = (db) => {
         }
     });
 
-    // Get single studio
+    // Get single studio by ID
     router.get("/:id", async (req, res) => {
         try {
             const result = await studiosCollection.findOne({ _id: new ObjectId(req.params.id) });
