@@ -1,17 +1,21 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion } = require("mongodb");
-require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// CORS setup
+// CORS Setup (Vercel frontend ebong localhost er jonno)
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      /\.vercel\.app$/, // Shob Vercel deploy URL allow korar jonno
+    ],
     credentials: true,
   })
 );
@@ -19,34 +23,33 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-// Detect URI dynamically from various common naming conventions
-const uri =
-  process.env.MONGODB_URI ||
-  process.env.MONGO_URI ||
-  process.env.DATABASE_URL ||
-  (process.env.DB_USER && process.env.DB_PASS
-    ? `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.mongodb.net/?retryWrites=true&w=majority`
-    : undefined);
-
-if (!uri) {
-  console.error(
-    "MongoDB Connection Error: No valid connection string found in .env!\n" +
-    "Please check your .env file and ensure MONGODB_URI (or DB_USER & DB_PASS) is defined."
-  );
-  process.exit(1);
-}
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
+// Root health check route (run function er baire)
+app.get("/", (req, res) => {
+  res.send("StudioSpace Server is running smoothly on Vercel!");
 });
+
+const uri = process.env.MONGODB_URI;
+let client;
+let clientPromise;
+
+if (uri) {
+  client = new MongoClient(uri, {
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
+    },
+  });
+  clientPromise = client.connect();
+}
 
 async function run() {
   try {
-    await client.connect();
+    if (!clientPromise) {
+      console.error("MONGODB_URI missing in Environment Variables!");
+      return;
+    }
+    await clientPromise;
     const db = client.db("studiospace_db");
     const usersCollection = db.collection("user");
 
@@ -61,31 +64,31 @@ async function run() {
 
       const token = jwt.sign(
         user,
-        process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET || "super_secret_jwt_key_studiospace_2026",
+        process.env.JWT_SECRET || "super_secret_jwt_key_studiospace_2026",
         { expiresIn: "7d" }
       );
 
       res
         .cookie("token", token, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          secure: true,
+          sameSite: "none",
         })
         .json({ success: true, message: "Security token initialized" });
     });
 
-    // 2. Clear JWT Cookie on Logout
+    // 2. Clear JWT Cookie
     app.post("/api/auth/logout", (req, res) => {
       res
         .clearCookie("token", {
           httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          secure: true,
+          sameSite: "none",
         })
         .json({ success: true, message: "Cleared auth cookie" });
     });
 
-    // 3. User Profile Update
+    // 3. Update User Profile
     app.patch("/api/auth/update-profile", async (req, res) => {
       try {
         const { email, name, image } = req.body;
@@ -114,10 +117,6 @@ async function run() {
 
     app.use("/api/studios", studioRoutes);
     app.use("/api/bookings", bookingRoutes);
-
-    app.get("/", (req, res) => {
-      res.send("StudioSpace Server is running smoothly!");
-    });
   } catch (error) {
     console.error("MongoDB connection failed:", error);
   }
@@ -125,6 +124,12 @@ async function run() {
 
 run().catch(console.dir);
 
-app.listen(port, () => {
-  console.log(`StudioSpace server listening on port ${port}`);
-});
+// Local environment er jonno listen
+if (process.env.NODE_ENV !== "production") {
+  app.listen(port, () => {
+    console.log(`StudioSpace server listening on port ${port}`);
+  });
+}
+
+// Vercel serverless export er jonno mandatory
+module.exports = app;
