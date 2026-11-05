@@ -1,104 +1,84 @@
-import express from "express";
-import { ObjectId } from "mongodb";
-import { connectDB } from "../db.js";
-
+const express = require("express");
 const router = express.Router();
+const { ObjectId } = require("mongodb");
+const verifyToken = require("../middlewares/verifyToken");
 
-async function getBookingsCollection() {
-    const db = await connectDB();
-    return db.collection("bookings");
-}
+module.exports = (db) => {
+    const bookingsCollection = db.collection("bookings");
 
-router.get("/user", async (req, res) => {
-    try {
-        const { email } = req.query;
-        if (!email) {
-            return res.status(400).json({ message: "User email is required" });
+    // Get user bookings
+    router.get("/user", async (req, res) => {
+        try {
+            const { email } = req.query;
+            if (!email) return res.status(400).json({ message: "Email required" });
+            const result = await bookingsCollection
+                .find({ userEmail: email })
+                .sort({ _id: -1 })
+                .toArray();
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ message: "Failed to fetch bookings" });
         }
+    });
 
-        const bookingsCollection = await getBookingsCollection();
-        const result = await bookingsCollection
-            .find({ userEmail: email })
-            .sort({ createdAt: -1 })
-            .toArray();
+    // Protected: Create Booking with Overlap Check
+    router.post("/", verifyToken, async (req, res) => {
+        try {
+            const { studioId, bookingDate, startTime, endTime, totalPrice, studioTitle, userEmail, userName } = req.body;
 
-        res.status(200).json(result);
-    } catch (error) {
-        res.status(500).json({ message: "Failed to fetch bookings", error: error.message });
-    }
-});
+            if (!studioId || !bookingDate || !startTime || !endTime) {
+                return res.status(400).json({ message: "Missing required booking details" });
+            }
 
-router.post("/", async (req, res) => {
-    try {
-        const { studioId, studioTitle, userEmail, userName, bookingDate, startTime, endTime, totalPrice } = req.body;
-
-        if (!studioId || !userEmail || !bookingDate || !startTime || !endTime) {
-            return res.status(400).json({ message: "All required booking fields must be provided" });
-        }
-
-        const bookingsCollection = await getBookingsCollection();
-
-        const existingBooking = await bookingsCollection.findOne({
-            studioId: studioId,
-            bookingDate: bookingDate,
-            status: "Confirmed",
-            $or: [
-                {
-                    startTime: { $lt: endTime },
-                    endTime: { $gt: startTime },
-                },
-            ],
-        });
-
-        if (existingBooking) {
-            return res.status(409).json({
-                message: "This time slot is already booked for this studio. Please choose another slot.",
+            // MongoDB Challenge 2: Collision check for Confirmed or Pending slots
+            const conflictingBooking = await bookingsCollection.findOne({
+                studioId: studioId,
+                bookingDate: bookingDate,
+                status: { $in: ["Confirmed", "Pending"] },
+                $and: [
+                    { startTime: { $lt: endTime } },
+                    { endTime: { $gt: startTime } },
+                ],
             });
+
+            if (conflictingBooking) {
+                return res.status(409).json({
+                    message: `Slot collision detected! This workspace is already reserved between ${conflictingBooking.startTime} and ${conflictingBooking.endTime} on ${bookingDate}. Please pick another time slot.`,
+                });
+            }
+
+            const newBooking = {
+                studioId,
+                studioTitle,
+                userEmail,
+                userName,
+                bookingDate,
+                startTime,
+                endTime,
+                totalPrice: Number(totalPrice),
+                status: "Pending",
+                createdAt: new Date(),
+            };
+
+            const result = await bookingsCollection.insertOne(newBooking);
+            res.status(201).json({ insertedId: result.insertedId, success: true });
+        } catch (err) {
+            res.status(500).json({ message: "Server error creating reservation" });
         }
+    });
 
-        const newBooking = {
-            studioId,
-            studioTitle,
-            userEmail,
-            userName,
-            bookingDate,
-            startTime,
-            endTime,
-            totalPrice: Number(totalPrice),
-            status: "Pending",
-            createdAt: new Date(),
-        };
-
-        const result = await bookingsCollection.insertOne(newBooking);
-        res.status(201).json({ success: true, insertedId: result.insertedId });
-    } catch (error) {
-        res.status(500).json({ message: "Failed to create booking", error: error.message });
-    }
-});
-
-router.patch("/:id/cancel", async (req, res) => {
-    try {
-        const { id } = req.params;
-        const bookingsCollection = await getBookingsCollection();
-
-        const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
-        if (!booking) {
-            return res.status(404).json({ message: "Booking not found" });
+    // Protected: Cancel Booking
+    router.patch("/:id/cancel", verifyToken, async (req, res) => {
+        try {
+            const result = await bookingsCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: { status: "Cancelled", cancelledAt: new Date() } }
+            );
+            res.json({ success: true, message: "Booking cancelled" });
+        } catch (err) {
+            res.status(500).json({ message: "Failed to cancel booking" });
         }
+    });
 
-        if (booking.status !== "Pending") {
-            return res.status(400).json({ message: "Only pending bookings can be cancelled" });
-        }
-
-        const result = await bookingsCollection.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { status: "Cancelled" } }
-        );
-
-        res.status(200).json({ success: true, modifiedCount: result.modifiedCount });
-    } catch (error) {
-        res.status(500).json({ message: "Failed to cancel booking", error: error.message });
-    }
-});
-
-export default router;
+    return router;
+};
